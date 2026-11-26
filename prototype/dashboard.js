@@ -65,11 +65,17 @@ function renderLive(data) {
   byId("settings").hidden = false;
   byId("settings-link").hidden = false;
   byId("kis-settings").hidden = !data.settings_available;
+  byId("admin-pairing").hidden = !data.mobile_enabled;
+  byId("server-release").hidden = mobilePage;
+  byId("app-stop").hidden = mobilePage;
+  if (mobilePage) byId("settings").hidden = !data.settings_available;
+  if (mobilePage) byId("settings-link").hidden = !data.settings_available;
+
   const quoteAge = data.latest == null ? Infinity : Date.now() / 1000 - data.latest;
   status.textContent = data.error || (data.latest
     ? `${quoteAge > 15 ? "조회 지연 · " : ""}마지막 KIS 조회 ${time(data.latest)} KST`
     : data.settings_available ? "내 설정에서 한투 계좌 연결" : "KIS 조회 대기");
-  if (!byId("release-check").dataset.checked) {
+  if (!mobilePage && !byId("release-check").dataset.checked) {
     byId("release-check").dataset.checked = "1";
     checkRelease();
   }
@@ -242,15 +248,20 @@ async function saveSettings(event) {
 async function refresh() {
   try {
     const response = await fetch("/api/state");
+    if (mobilePage && response.status === 401) {
+      showMobileSession(false);
+      return;
+    }
     if (!response.ok) throw new Error("State unavailable");
     render(await response.json());
+    showMobileSession(true);
   } catch {
     status.textContent = "서버 연결 끊김 · 화면에 마지막 데이터 표시";
     toggle.disabled = true;
   }
 }
 
-if (location.protocol === "http:") {
+if (["http:", "https:"].includes(location.protocol)) {
   byId("release-check").addEventListener("click", checkRelease);
   byId("app-stop").addEventListener("click", async () => {
     if (!window.confirm("3Q를 종료하면 시세와 체결 조회가 중단됩니다. 종료할까요?")) return;

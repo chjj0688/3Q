@@ -8,7 +8,7 @@ import sqlite3
 import sys
 import threading
 import time
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = {
     "/": ("prototype/index.html", "text/html; charset=utf-8"),
     "/dashboard.js": ("prototype/dashboard.js", "text/javascript; charset=utf-8"),
+    "/mobile.js": ("prototype/mobile.js", "text/javascript; charset=utf-8"),
+    "/app.webmanifest": ("prototype/app.webmanifest", "application/manifest+json"),
+    "/service-worker.js": ("prototype/service-worker.js", "text/javascript; charset=utf-8"),
+    "/icon-192.png": ("prototype/icon-192.png", "image/png"),
+    "/icon-512.png": ("prototype/icon-512.png", "image/png"),
 }
 
 
@@ -74,7 +79,11 @@ def send_discord(db, webhook, stop, live=False):
         db.execute(f"UPDATE {table} SET notification=? WHERE id=?", (status, fill["id"]))
 
 
-def serve(path, port, webhook, live=False):
+def serve(path, port, webhook, live=False, mobile_origin=None, mobile_port=8034):
+    mobile_auth = None
+    if mobile_origin:
+        from .mobile import AuthError, MobileAuth
+        mobile_auth = MobileAuth(path, mobile_origin)
     stop = threading.Event()
     reload_credentials = threading.Event()
     allow_settings = live and sys.platform == "darwin" and not any(os.environ.get(key) for key in VARIABLES)
@@ -85,7 +94,9 @@ def serve(path, port, webhook, live=False):
             db.execute("UPDATE fills SET notification='재시작으로 취소' WHERE notification='대기'")
 
     class Handler(BaseHTTPRequestHandler):
-        def send_payload(self, payload, content_type):
+        mobile = False
+
+        def send_payload(self, payload, content_type, cookie=None):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
@@ -94,34 +105,76 @@ def serve(path, port, webhook, live=False):
                              "frame-ancestors 'none'; form-action 'self'; base-uri 'none'")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", str(len(payload)))
+            if cookie:
+                self.send_header("Set-Cookie", cookie)
             self.end_headers()
             self.wfile.write(payload)
 
         def trusted_host(self):
-            return self.headers.get("Host") == f"127.0.0.1:{port}"
+            host = self.headers.get("Host")
+            if self.mobile:
+                return host in (mobile_auth.rp_id, f"127.0.0.1:{mobile_port}")
+            return host == f"127.0.0.1:{port}"
+
+        def mobile_session(self):
+            return mobile_auth.authorized(self.headers.get("Cookie", ""))
+
+        def json_body(self, maximum=32768):
+            if self.headers.get_content_type() != "application/json":
+                raise ValueError
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 1 <= length <= maximum:
+                raise ValueError
+            self.connection.settimeout(5)
+            value = json.loads(self.rfile.read(length))
+            if not isinstance(value, dict):
+                raise ValueError
+            return value
 
         def do_GET(self):
             if not self.trusted_host():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             if self.path == "/api/state":
+                if self.mobile and not self.mobile_session():
+                    self.send_error(HTTPStatus.UNAUTHORIZED)
+                    return
                 with closing(connect(path)) as db:
                     db.execute("BEGIN")
                     state = live_snapshot(db) if live else snapshot(db)
                 if live:
                     state["settings_available"] = allow_settings
+                    state["mobile_enabled"] = bool(mobile_auth) and not self.mobile
                 self.send_payload(json.dumps(state).encode(), "application/json")
-            elif self.path == "/api/release" and live:
+            elif self.path == "/api/release" and live and not self.mobile:
                 self.send_payload(json.dumps(release_status()).encode(), "application/json")
             elif self.path in ASSETS:
                 name, content_type = ASSETS[self.path]
-                self.send_payload((ROOT / name).read_bytes(), content_type)
+                payload = (ROOT / name).read_bytes()
+                if self.path == "/" and self.mobile:
+                    payload = payload.replace(b"<body>", b'<body data-mobile="true">', 1)
+                self.send_payload(payload, content_type)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self):
-            if not self.trusted_host() or self.headers.get("Origin") != f"http://127.0.0.1:{port}":
+            origin = mobile_auth.origin if self.mobile else f"http://127.0.0.1:{port}"
+            if not self.trusted_host() or self.headers.get("Origin") != origin:
                 self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if self.mobile:
+                if self.path == "/api/settings/kis" and allow_settings and self.mobile_session():
+                    self.save_kis_settings()
+                else:
+                    self.handle_mobile_auth()
+                return
+            if mobile_auth and self.path == "/api/mobile/pair":
+                payload = {"code": mobile_auth.issue_pairing(), "origin": mobile_auth.origin}
+                self.send_payload(json.dumps(payload).encode(), "application/json")
+                return
+            if mobile_auth and self.path == "/api/mobile/reset":
+                mobile_auth.reset()
+                self.send_payload(b"{}", "application/json")
                 return
             if self.path == "/api/stop" and live:
                 self.send_payload(b"{}", "application/json")
@@ -138,16 +191,39 @@ def serve(path, port, webhook, live=False):
                 db.execute("UPDATE account SET paused=? WHERE id=1", (actions[self.path],))
             self.send_payload(b"{}", "application/json")
 
-        def save_kis_settings(self):
-            if self.headers.get_content_type() != "application/json":
-                self.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+        def handle_mobile_auth(self):
+            if self.path == "/api/mobile/logout":
+                cookie = mobile_auth.logout(self.headers.get("Cookie", ""))
+                self.send_payload(b"{}", "application/json", cookie)
                 return
+            paths = {
+                "/api/mobile/register/options": ("register", False),
+                "/api/mobile/register/verify": ("register", True),
+                "/api/mobile/login/options": ("login", False),
+                "/api/mobile/login/verify": ("login", True),
+            }
+            if self.path not in paths:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            kind, verify = paths[self.path]
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 1 <= length <= 4096:
-                    raise ValueError
-                self.connection.settimeout(5)
-                form = json.loads(self.rfile.read(length))
+                form = self.json_body()
+                if verify:
+                    cookie = mobile_auth.verify(kind, form)
+                    self.send_payload(b"{}", "application/json", cookie)
+                else:
+                    options = mobile_auth.options(kind, form)
+                    self.send_payload(json.dumps(options).encode(), "application/json")
+            except AuthError as exc:
+                self.send_error(HTTPStatus.UNAUTHORIZED, str(exc))
+            except (ValueError, OSError):
+                self.send_error(HTTPStatus.BAD_REQUEST)
+            except sqlite3.Error:
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
+
+        def save_kis_settings(self):
+            try:
+                form = self.json_body(maximum=4096)
                 candidate = KIS(tuple(form[key] for key in ("key", "secret", "account", "product")))
             except (ValueError, KeyError, TypeError, KISError, OSError):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid KIS settings")
@@ -217,7 +293,19 @@ def serve(path, port, webhook, live=False):
         with closing(connect(path)) as db:
             send_discord(db, webhook, stop, live=live)
 
-    with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
+    class MobileHandler(Handler):
+        mobile = True
+
+    with ExitStack() as stack:
+        server = stack.enter_context(ThreadingHTTPServer(("127.0.0.1", port), Handler))
+        if mobile_auth:
+            mobile_server = stack.enter_context(
+                ThreadingHTTPServer(("127.0.0.1", mobile_port), MobileHandler)
+            )
+            mobile_thread = threading.Thread(target=mobile_server.serve_forever)
+            mobile_thread.start()
+            stack.callback(mobile_thread.join)
+            stack.callback(mobile_server.shutdown)
         workers = [threading.Thread(target=collect_live if live else collect)]
         if webhook:
             workers.append(threading.Thread(target=notify))
@@ -255,6 +343,8 @@ def main():
         run.add_argument("--port", type=int, default=8033)
         run.add_argument("--db", type=Path, default=data / default)
         run.add_argument("--discord", action="store_true")
+    run.add_argument("--mobile-origin", help="trusted Tailscale Serve HTTPS origin for phones")
+    run.add_argument("--mobile-port", type=int, default=8034, help="loopback port for the mobile proxy")
     order = commands.add_parser("order")
     order.add_argument("side", choices=("BUY", "SELL"))
     order.add_argument("symbol", choices=("TQQQ", "SQQQ"))
@@ -324,9 +414,14 @@ def main():
             if (url.scheme != "https" or url.netloc != "discord.com"
                     or not url.path.startswith("/api/webhooks/")):
                 parser.error("Set THREEQ_DISCORD_WEBHOOK to a Discord incoming webhook URL")
+        mobile_origin = getattr(args, "mobile_origin", None)
+        mobile_port = getattr(args, "mobile_port", 8034)
+        if mobile_origin and (not 1 <= mobile_port <= 65535 or mobile_port == args.port):
+            parser.error("Set a valid mobile port distinct from the admin port")
         with exclusive(path, ".lock"):
-            serve(path, args.port, webhook, live=args.command == "live")
-    except (KISError, ValueError, OSError) as exc:
+            serve(path, args.port, webhook, live=args.command == "live",
+                  mobile_origin=mobile_origin, mobile_port=mobile_port)
+    except (KISError, ValueError, OSError, ImportError) as exc:
         parser.error(str(exc))
 
 
