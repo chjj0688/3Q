@@ -15,7 +15,7 @@ const plot = document.querySelector(".chart");
 const canvas = document.createElement("canvas");
 canvas.id = "runtime-chart";
 canvas.setAttribute("role", "img");
-canvas.setAttribute("aria-label", "TQQQ 최근 120초 시세");
+canvas.setAttribute("aria-label", "TQQQ 최근 시세");
 const status = byId("feed-status");
 const toggle = byId("toggle");
 const stateValues = document.querySelectorAll("#system dd");
@@ -24,7 +24,7 @@ const activity = document.querySelector(".activity");
 let paused = false;
 let updating = false;
 
-function draw(points) {
+function draw(points, contiguous = true) {
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.round(canvas.clientWidth * ratio));
   canvas.height = Math.round(canvas.clientHeight * ratio);
@@ -52,7 +52,7 @@ function draw(points) {
     const x = 2 + (width - 4) * (point.second - points[0].second) / span;
     const fraction = high === low ? 0.5 : (high - point.price) / (high - low);
     const y = inset + (height - 2 * inset) * fraction;
-    if (previous === null || point.second !== previous + 1) ctx.moveTo(x, y);
+    if (previous === null || point.second - previous > (contiguous ? 1 : 15)) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
     previous = point.second;
   }
@@ -60,7 +60,77 @@ function draw(points) {
   canvas.setAttribute("aria-label", `TQQQ 최근 시세. 최저 ${price(low)}, 최고 ${price(high)}`);
 }
 
+function renderLive(data) {
+  byId("mode").textContent = "KIS 실계좌 · 모니터링";
+  const quoteAge = data.latest == null ? Infinity : Date.now() / 1000 - data.latest;
+  status.textContent = data.error || (data.latest
+    ? `${quoteAge > 15 ? "조회 지연 · " : ""}마지막 KIS 조회 ${time(data.latest)} KST`
+    : "KIS 조회 대기");
+  document.querySelector(".heading .caption").textContent = "한국투자증권 해외주식";
+  const labels = ["해외주식 보유", "계좌 조회 시각", "최근 주문 상태", "자동 주문"];
+  const orderStates = {
+    ACCEPTED: "KIS 접수", PARTIAL: "부분 체결", FILLED: "체결 완료",
+    REJECTED: "거절", UNKNOWN: "결과 불명", BROKER_CLOSED: "증권사 확인 후 종료",
+  };
+  for (const [index, label] of labels.entries()) {
+    metrics[index].previousElementSibling.textContent = label;
+    metrics[index].className = "num";
+  }
+  metrics[0].textContent = data.account_updated ? `${data.holdings.length}종목` : "—";
+  metrics[1].textContent = data.account_updated ? time(data.account_updated) : "—";
+  metrics[2].textContent = data.orders.length ? orderStates[data.orders[0].state] : "주문 없음";
+  metrics[3].textContent = "비활성";
+  captions[0].textContent = data.holdings.map((holding) => `${holding.symbol} ${holding.quantity}주`).join(" · ");
+  captions[1].textContent = "KST";
+  captions[1].className = "caption";
+  captions[2].textContent = data.orders[0]?.broker_id ? `KIS #${data.orders[0].broker_id}` : "";
+  captions[3].textContent = "CLI에서 지정가 주문 확인";
+  byId("controls").hidden = true;
+  document.querySelector(".session").textContent = "KIS REST · 최근 체결가 조회";
+  instrument.querySelector("strong").textContent = data.quotes.TQQQ ? price(data.quotes.TQQQ) : "—";
+  marketTime.textContent = "조회 시각 기준 · 거래소 체결 시각과 다를 수 있음";
+  for (const [index, symbol] of ["TQQQ", "SQQQ", "QQQ"].entries()) {
+    watchValues[index].textContent = data.quotes[symbol] ? price(data.quotes[symbol]) : "—";
+  }
+  draw(data.chart, false);
+  for (const [index, [label, value]] of [
+    ["시세 입력", data.latest ? "KIS REST" : "조회 대기"],
+    ["마지막 계좌 조회", data.account_updated ? time(data.account_updated) + " KST" : "조회 대기"],
+    ["Discord 알림", data.orders.find((order) => order.notification)?.notification ?? "체결 대기"],
+  ].entries()) {
+    stateValues[index].className = "";
+    stateValues[index].textContent = value;
+    stateValues[index].previousElementSibling.textContent = label;
+  }
+  document.querySelector("#trades h2").textContent = "최근 KIS 주문";
+  document.querySelector("thead th:nth-child(5)").textContent = "지정가";
+  document.querySelector("thead th:last-child").textContent = "체결 상태";
+  const table = document.querySelector("tbody");
+  table.replaceChildren();
+  for (const order of data.orders) {
+    const row = table.insertRow();
+    for (const value of [
+      time(order.sent), order.symbol, order.side === "BUY" ? "매수" : "매도",
+      `${order.quantity}주`, price(order.limit_price),
+      `${orderStates[order.state]} · ${order.filled}/${order.quantity}주`,
+    ]) row.insertCell().textContent = value;
+  }
+  if (!data.orders.length) {
+    const cell = table.insertRow().insertCell();
+    cell.colSpan = 6;
+    cell.textContent = "3Q에서 제출한 실계좌 주문이 없습니다.";
+  }
+  document.querySelector(".lower section:last-child h2").textContent = "실계좌 운영";
+  activity.children[0].textContent = data.error ?? "KIS 조회 · 주문과 체결을 별도로 표시";
+  activity.children[1].textContent = "대시보드는 조회 전용";
+  byId("footer").textContent = "3Q · KIS 실계좌 모니터링";
+}
+
 function render(data) {
+  if (data.mode === "live") {
+    renderLive(data);
+    return;
+  }
   const { account, latest, quotes, fills, chart, starting_cash: initial } = data;
   const equity = latest?.equity ?? initial;
   const pnl = equity - initial;
@@ -88,6 +158,7 @@ function render(data) {
   stateValues[1].className = stale ? "down" : "up";
   stateValues[2].textContent = fills[0]?.notification ?? "체결 대기";
   paused = Boolean(account.paused);
+  byId('controls').hidden = !latest;
   toggle.textContent = paused ? "모의 주문 재개" : "모의 주문 일시정지";
   toggle.disabled = updating;
   const table = document.querySelector("tbody");
@@ -124,7 +195,7 @@ async function refresh() {
 }
 
 if (location.protocol === "http:") {
-  byId("controls").removeAttribute("hidden");
+
   byId("mode").textContent = "모의매매 · 합성 시세";
   document.querySelector(".heading .caption").textContent = "로컬 데모 계좌";
   document.querySelector(".metric:nth-child(2) p").textContent = "누적 손익";
