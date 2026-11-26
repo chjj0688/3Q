@@ -54,7 +54,15 @@ th,td{text-align:left;padding:8px 9px 8px 0;border-bottom:1px solid var(--border
 th{font-size:12px;color:var(--muted);font-weight:500}tr:last-child td{border:0}
 .activity{list-style:none;margin:9px 0 0;padding:0}
 .activity li{border-bottom:1px solid var(--border);padding:7px 0;display:flex;gap:10px;justify-content:space-between}.activity li:last-child{border:0}
-.controls[hidden]{display:none}.controls{display:flex;align-items:center;gap:10px;margin-top:12px}button{background:#23333a;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 9px;font:inherit}button:disabled{opacity:.55}button:focus-visible{outline:2px solid var(--mint)}#runtime-chart{display:block;width:100%;height:190px} .blue{color:var(--blue)}
+.controls[hidden]{display:none}.controls{display:flex;align-items:center;gap:10px;margin-top:12px}button{background:#23333a;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 9px;font:inherit}button:disabled{opacity:.55}button:focus-visible{outline:2px solid var(--mint)}#runtime-chart{display:block;width:100%;height:190px} [hidden]{display:none!important}
+.settings{margin-bottom:14px;scroll-margin-top:14px}
+.settings fieldset{border:0;margin:14px 0 18px;padding:0 0 16px;border-bottom:1px solid var(--border)}
+.settings legend{font-weight:700;padding:0}
+.settings label{display:grid;gap:4px;max-width:420px;margin:10px 0;color:var(--muted)}
+.settings input{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px;font:inherit}
+.settings input:focus-visible{outline:2px solid var(--mint)}
+.settings button{cursor:pointer}
+.blue{color:var(--blue)}
 @media(max-width:1040px){.shell{grid-template-columns:168px minmax(0,1fr)}main{padding:24px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:740px){.shell{display:block}aside{padding:12px 16px;border-right:0;border-bottom:1px solid var(--border)}.brand{margin:0 0 8px}nav{display:flex;overflow:auto}.machine{display:none}main{padding:18px 15px}.workspace,.lower{grid-template-columns:1fr}.metric strong{font-size:19px}.card{padding:14px}.plot{height:150px}}
 </style>
@@ -68,6 +76,7 @@ th{font-size:12px;color:var(--muted);font-weight:500}tr:last-child td{border:0}
     <a href="#market">시장 현황</a>
     <a href="#trades">모의 체결</a>
     <a href="#system">시스템 상태</a>
+    <a href="#settings" id="settings-link" hidden>내 설정</a>
   </nav>
   <p class="machine">MacBook Neo · 예시 운영 환경</p>
 </aside>
@@ -119,6 +128,26 @@ th{font-size:12px;color:var(--muted);font-weight:500}tr:last-child td{border:0}
       <ul class="activity"><li><span>Discord 체결 알림 전송</span><time class="caption">00:16:10</time></li><li><span>TQQQ 모의매수 체결</span><time class="caption">00:16:09</time></li><li><span>미국 정규장 시세 수집 시작</span><time class="caption">23:30:00</time></li></ul>
     </section>
   </div>
+  <section class="card settings" id="settings" hidden>
+    <h2>내 설정</h2>
+    <form id="kis-settings" method="post" action="/api/settings/kis" autocomplete="off">
+      <fieldset>
+        <legend>한투 실계좌</legend>
+        <p class="caption">새 키와 계좌 정보를 입력하면 이 맥의 키체인에 저장합니다.</p>
+        <label>실전용 APP KEY <input name="key" type="password" autocomplete="off" maxlength="256" required></label>
+        <label>실전용 APP SECRET <input name="secret" type="password" autocomplete="off" maxlength="512" required></label>
+        <label>계좌번호 앞 8자리 <input name="account" type="password" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" autocomplete="off" required></label>
+        <label>상품코드 뒤 2자리 <input name="product" type="password" inputmode="numeric" maxlength="2" pattern="[0-9]{2}" autocomplete="off" required></label>
+        <button type="submit">키체인에 저장</button>
+        <p id="kis-settings-status" role="status"></p>
+      </fieldset>
+    </form>
+    <div class="section-top">
+      <div><h2>앱 버전</h2><p class="caption" id="release-status" role="status">설치 버전을 확인합니다.</p></div>
+      <button type="button" id="release-check">업데이트 확인</button>
+    </div>
+    <button type="button" id="app-stop">3Q 종료</button>
+  </section>
   <footer class="caption" id="footer">화면 시안 · 실행 버전 표시 예시 v0.1.0</footer>
 </main>
 </div>

@@ -29,8 +29,12 @@ CREATE TABLE IF NOT EXISTS live_orders (
 
 
 def initialize(db, kis):
-    identity = sha256(f"{kis.cano}:{kis.product}".encode()).hexdigest()
     db.executescript(SCHEMA)
+    bind_account(db, kis)
+
+
+def bind_account(db, kis):
+    identity = sha256(f"{kis.cano}:{kis.product}".encode()).hexdigest()
     db.execute("INSERT OR IGNORE INTO live_account (id, identity) VALUES (1, ?)", (identity,))
     if db.execute("SELECT identity FROM live_account").fetchone()[0] != identity:
         raise KISError("Live database is already bound to a different KIS account")
@@ -158,6 +162,8 @@ def record_account(db, kis):
 
 def live_snapshot(db):
     account = db.execute("SELECT updated, holdings, error FROM live_account").fetchone()
+    if account is None:
+        account = {"updated": None, "holdings": None, "error": None}
     latest = db.execute("SELECT MAX(second) FROM live_quotes").fetchone()[0]
     quotes = dict(db.execute("SELECT symbol, price FROM live_quotes WHERE second=?", (latest,)))
     chart = [dict(row) for row in db.execute(

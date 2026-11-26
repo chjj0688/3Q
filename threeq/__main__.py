@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import threading
 import time
 from contextlib import closing, contextmanager
@@ -16,9 +17,11 @@ from urllib.parse import urlsplit
 from urllib.request import Request, build_opener
 
 from .engine import STARTING_CASH, apply_sample, connect, demo_sample, replay_csv
-from .keychain import CredentialError, configure
+from .keychain import CredentialError, Keychain, VARIABLES, configure
 from .kis import KIS, KISError, NoRedirect
-from .live import initialize, live_snapshot, order_limit, reconcile, record_account, record_quotes, submit
+from .live import SCHEMA as LIVE_SCHEMA
+from .live import bind_account, initialize, live_snapshot, order_limit, reconcile, record_account, record_quotes, submit
+from .releases import release_status
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = {
@@ -71,11 +74,13 @@ def send_discord(db, webhook, stop, live=False):
         db.execute(f"UPDATE {table} SET notification=? WHERE id=?", (status, fill["id"]))
 
 
-def serve(path, port, webhook, kis=None):
+def serve(path, port, webhook, live=False):
     stop = threading.Event()
+    reload_credentials = threading.Event()
+    allow_settings = live and sys.platform == "darwin" and not any(os.environ.get(key) for key in VARIABLES)
     with closing(connect(path)) as db:
-        if kis:
-            initialize(db, kis)
+        if live:
+            db.executescript(LIVE_SCHEMA)
         else:
             db.execute("UPDATE fills SET notification='재시작으로 취소' WHERE notification='대기'")
 
@@ -84,6 +89,10 @@ def serve(path, port, webhook, kis=None):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                             "frame-ancestors 'none'; form-action 'self'; base-uri 'none'")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -98,8 +107,12 @@ def serve(path, port, webhook, kis=None):
             if self.path == "/api/state":
                 with closing(connect(path)) as db:
                     db.execute("BEGIN")
-                    state = live_snapshot(db) if kis else snapshot(db)
+                    state = live_snapshot(db) if live else snapshot(db)
+                if live:
+                    state["settings_available"] = allow_settings
                 self.send_payload(json.dumps(state).encode(), "application/json")
+            elif self.path == "/api/release" and live:
+                self.send_payload(json.dumps(release_status()).encode(), "application/json")
             elif self.path in ASSETS:
                 name, content_type = ASSETS[self.path]
                 self.send_payload((ROOT / name).read_bytes(), content_type)
@@ -110,12 +123,48 @@ def serve(path, port, webhook, kis=None):
             if not self.trusted_host() or self.headers.get("Origin") != f"http://127.0.0.1:{port}":
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if self.path == "/api/stop" and live:
+                self.send_payload(b"{}", "application/json")
+                self.server.shutdown()
+                return
+            if self.path == "/api/settings/kis" and allow_settings:
+                self.save_kis_settings()
+                return
             actions = {"/api/pause": 1, "/api/resume": 0}
-            if kis or self.path not in actions:
+            if live or self.path not in actions:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             with closing(connect(path)) as db:
                 db.execute("UPDATE account SET paused=? WHERE id=1", (actions[self.path],))
+            self.send_payload(b"{}", "application/json")
+
+        def save_kis_settings(self):
+            if self.headers.get_content_type() != "application/json":
+                self.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= 4096:
+                    raise ValueError
+                self.connection.settimeout(5)
+                form = json.loads(self.rfile.read(length))
+                candidate = KIS(tuple(form[key] for key in ("key", "secret", "account", "product")))
+            except (ValueError, KeyError, TypeError, KISError, OSError):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid KIS settings")
+                return
+            try:
+                with closing(connect(path)) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    bind_account(db, candidate)
+                    Keychain().write((candidate.key, candidate.secret, candidate.cano, candidate.product))
+                    db.commit()
+            except KISError:
+                self.send_error(HTTPStatus.CONFLICT, "Database linked to a different account")
+                return
+            except (CredentialError, OSError, sqlite3.Error):
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not save settings")
+                return
+            reload_credentials.set()
             self.send_payload(b"{}", "application/json")
 
         def log_message(self, *_args):
@@ -134,7 +183,18 @@ def serve(path, port, webhook, kis=None):
     def collect_live():
         with closing(connect(path)) as db:
             next_account = 0
+            kis = None
             while not stop.is_set():
+                if kis is None or reload_credentials.is_set():
+                    reload_credentials.clear()
+                    try:
+                        kis = KIS()
+                        initialize(db, kis)
+                    except KISError:
+                        kis = None
+                        reload_credentials.wait(5)
+                        continue
+                    next_account = 0
                 now = time.monotonic()
                 errors = []
                 try:
@@ -151,25 +211,26 @@ def serve(path, port, webhook, kis=None):
                     db.execute("UPDATE live_account SET error=? WHERE id=1", ((" / ".join(errors) or None),))
                 elif errors:
                     db.execute("UPDATE live_account SET error=? WHERE id=1", (" / ".join(errors),))
-                stop.wait(2 if not errors else 10)
+                reload_credentials.wait(2 if not errors else 10)
 
     def notify():
         with closing(connect(path)) as db:
-            send_discord(db, webhook, stop, live=bool(kis))
+            send_discord(db, webhook, stop, live=live)
 
     with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
-        workers = [threading.Thread(target=collect_live if kis else collect)]
+        workers = [threading.Thread(target=collect_live if live else collect)]
         if webhook:
             workers.append(threading.Thread(target=notify))
         for worker in workers:
             worker.start()
-        print(f"3Q {'실계좌' if kis else '데모'}: http://127.0.0.1:{port}", flush=True)
+        print(f"3Q {'실계좌' if live else '데모'}: http://127.0.0.1:{port}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
         finally:
             stop.set()
+            reload_credentials.set()
             for worker in workers:
                 worker.join()
 
@@ -230,8 +291,8 @@ def main():
     path = args.db.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        kis = None if args.command == "serve" else KIS()
         if args.command in ("order", "resolve-order"):
+            kis = KIS()
             with exclusive(path, ".order.lock"), closing(connect(path)) as db:
                 initialize(db, kis)
                 if args.command == "order":
@@ -264,7 +325,7 @@ def main():
                     or not url.path.startswith("/api/webhooks/")):
                 parser.error("Set THREEQ_DISCORD_WEBHOOK to a Discord incoming webhook URL")
         with exclusive(path, ".lock"):
-            serve(path, args.port, webhook, kis)
+            serve(path, args.port, webhook, live=args.command == "live")
     except (KISError, ValueError, OSError) as exc:
         parser.error(str(exc))
 

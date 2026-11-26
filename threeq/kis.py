@@ -7,7 +7,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .keychain import CredentialError, load_credentials
+from .keychain import CredentialError, load_credentials, validate
 
 BASE = "https://openapi.koreainvestment.com:9443"
 TRADING = "/uapi/overseas-stock/v1/trading"
@@ -38,9 +38,11 @@ def cents(value):
 
 
 class KIS:
-    def __init__(self):
+    def __init__(self, credentials=None):
         try:
-            self.key, self.secret, self.cano, self.product = load_credentials()
+            self.key, self.secret, self.cano, self.product = (
+                load_credentials() if credentials is None else validate(credentials)
+            )
         except CredentialError as exc:
             raise KISError(str(exc)) from None
         self.opener = build_opener(NoRedirect())

@@ -61,11 +61,18 @@ function draw(points, contiguous = true) {
 }
 
 function renderLive(data) {
-  byId("mode").textContent = "KIS 실계좌 · 모니터링";
+  byId("mode").textContent = "한투 실계좌 · 모니터링";
+  byId("settings").hidden = false;
+  byId("settings-link").hidden = false;
+  byId("kis-settings").hidden = !data.settings_available;
   const quoteAge = data.latest == null ? Infinity : Date.now() / 1000 - data.latest;
   status.textContent = data.error || (data.latest
     ? `${quoteAge > 15 ? "조회 지연 · " : ""}마지막 KIS 조회 ${time(data.latest)} KST`
-    : "KIS 조회 대기");
+    : data.settings_available ? "내 설정에서 한투 계좌 연결" : "KIS 조회 대기");
+  if (!byId("release-check").dataset.checked) {
+    byId("release-check").dataset.checked = "1";
+    checkRelease();
+  }
   document.querySelector(".heading .caption").textContent = "한국투자증권 해외주식";
   const labels = ["해외주식 보유", "계좌 조회 시각", "최근 주문 상태", "자동 주문"];
   const orderStates = {
@@ -183,6 +190,55 @@ function render(data) {
   }
 }
 
+async function checkRelease() {
+  const button = byId("release-check");
+  const status = byId("release-status");
+  button.disabled = true;
+  status.textContent = "GitHub 릴리스 확인 중…";
+  try {
+    const response = await fetch("/api/release");
+    if (!response.ok) throw new Error();
+    const info = await response.json();
+    const labels = {
+      update: `업데이트 필요 · 설치 ${info.current} → 최신 ${info.latest} · 설치 명령에서 새 버전을 지정하세요.`,
+      current: `최신 버전 · ${info.current}`,
+      unavailable: `설치 ${info.current} · GitHub 확인 실패. 인터넷과 저장소 접근 권한을 확인하세요.`,
+      "no-release": `설치 ${info.current} · GitHub 릴리스 태그가 없습니다.`,
+      development: "개발 실행 · 설치한 버전에서 GitHub 릴리스를 확인할 수 있습니다.",
+    };
+    status.textContent = labels[info.status];
+    byId("settings-link").textContent = info.status === "update" ? "내 설정 · 업데이트 필요" : "내 설정";
+  } catch {
+    status.textContent = "버전 정보를 확인할 수 없습니다.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button");
+  const status = byId("kis-settings-status");
+  button.disabled = true;
+  status.textContent = "키체인에 저장 중…";
+  try {
+    const response = await fetch("/api/settings/kis", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(form))),
+    });
+    if (response.status === 409) throw new Error("기존 데이터가 다른 한투 계좌에 연결되어 있습니다.");
+    if (!response.ok) throw new Error("저장하지 못했습니다. 입력과 macOS 키체인 접근 권한을 확인하세요.");
+    form.reset();
+    status.textContent = "저장했습니다. 한투 조회 상태가 잠시 후 갱신됩니다.";
+  } catch (error) {
+    status.textContent = error.message || "저장 요청에 실패했습니다.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function refresh() {
   try {
     const response = await fetch("/api/state");
@@ -195,6 +251,19 @@ async function refresh() {
 }
 
 if (location.protocol === "http:") {
+  byId("release-check").addEventListener("click", checkRelease);
+  byId("app-stop").addEventListener("click", async () => {
+    if (!window.confirm("3Q를 종료하면 시세와 체결 조회가 중단됩니다. 종료할까요?")) return;
+    try {
+      const response = await fetch("/api/stop", { method: "POST" });
+      if (!response.ok) throw new Error();
+      byId("app-stop").disabled = true;
+      byId("release-status").textContent = "3Q가 종료되었습니다. 업데이트 후 앱을 다시 열 수 있습니다.";
+    } catch {
+      byId("release-status").textContent = "3Q를 종료하지 못했습니다.";
+    }
+  });
+  byId("kis-settings").addEventListener("submit", saveSettings);
 
   byId("mode").textContent = "모의매매 · 합성 시세";
   document.querySelector(".heading .caption").textContent = "로컬 데모 계좌";
