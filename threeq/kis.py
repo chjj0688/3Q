@@ -1,12 +1,13 @@
 """KIS overseas-stock production API. Trading requests are never retried."""
 import json
-import os
 import re
 import time
 from decimal import Decimal, InvalidOperation
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from .keychain import CredentialError, load_credentials
 
 BASE = "https://openapi.koreainvestment.com:9443"
 TRADING = "/uapi/overseas-stock/v1/trading"
@@ -38,13 +39,10 @@ def cents(value):
 
 class KIS:
     def __init__(self):
-        self.key = os.environ.get("THREEQ_KIS_APP_KEY", "")
-        self.secret = os.environ.get("THREEQ_KIS_APP_SECRET", "")
-        self.cano = os.environ.get("THREEQ_KIS_ACCOUNT", "")
-        self.product = os.environ.get("THREEQ_KIS_PRODUCT", "")
-        if not (self.key and self.secret and re.fullmatch(r"[0-9]{8}", self.cano)
-                and re.fullmatch(r"[0-9]{2}", self.product)):
-            raise KISError("Configure KIS app key, app secret, 8-digit account and 2-digit product")
+        try:
+            self.key, self.secret, self.cano, self.product = load_credentials()
+        except CredentialError as exc:
+            raise KISError(str(exc)) from None
         self.opener = build_opener(NoRedirect())
         self.token = None
         self.expires = 0

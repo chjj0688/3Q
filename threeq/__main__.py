@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, build_opener
 
 from .engine import STARTING_CASH, apply_sample, connect, demo_sample, replay_csv
+from .keychain import CredentialError, configure
 from .kis import KIS, KISError, NoRedirect
 from .live import initialize, live_snapshot, order_limit, reconcile, record_account, record_quotes, submit
 
@@ -186,6 +187,7 @@ def exclusive(path, suffix):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("configure-kis", help="save production KIS credentials to macOS Keychain")
     data = Path.home() / "Library/Application Support/3Q"
     for name, default in (("serve", "demo.sqlite3"), ("live", "live.sqlite3")):
         run = commands.add_parser(name)
@@ -211,6 +213,13 @@ def main():
     replay = commands.add_parser("replay")
     replay.add_argument("csv", type=Path)
     args = parser.parse_args()
+    if args.command == "configure-kis":
+        try:
+            configure()
+        except CredentialError as exc:
+            parser.error(str(exc))
+        print("KIS 실계좌 설정을 macOS 키체인에 저장했습니다.")
+        return
     if args.command == "replay":
         try:
             with closing(connect(":memory:")) as db, args.csv.open(encoding="utf-8", newline="") as file:

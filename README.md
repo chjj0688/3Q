@@ -4,18 +4,16 @@
 
 ## 한국투자증권 실계좌
 
-실전용 KIS Open API 앱을 발급받은 맥에서 아래 네 환경 변수를 설정합니다. 값은 저장소 밖에서 관리하세요.
-
-| 환경 변수 | 값 |
-|---|---|
-| `THREEQ_KIS_APP_KEY` | 실전용 앱 키 |
-| `THREEQ_KIS_APP_SECRET` | 실전용 앱 시크릿 |
-| `THREEQ_KIS_ACCOUNT` | 계좌번호 앞 8자리 |
-| `THREEQ_KIS_PRODUCT` | 계좌번호 뒤 2자리 |
+macOS에서 Python 3.11 이상을 준비하고 저장소 폴더에서 실행합니다.
 
 ```bash
+python3 -m threeq configure-kis
 python3 -m threeq live
 ```
+
+첫 명령은 맥 터미널에서 실전용 앱 키, 앱 시크릿, 실계좌 앞 8자리, 상품코드 뒤 2자리를 순서대로 묻습니다. 입력은 화면에 표시되지 않으며, macOS 키체인의 `com.threeq.kis.production` 항목에 저장됩니다. 키를 재발급했으면 첫 명령을 다시 실행해 교체합니다. 키체인 접근 확인 창이 뜨면 실행한 Python의 접근을 확인한 뒤 허용하세요. 키체인에 저장하는 단계에서는 KIS 요청을 보내지 않습니다.
+
+`THREEQ_KIS_APP_KEY`, `THREEQ_KIS_APP_SECRET`, `THREEQ_KIS_ACCOUNT`, `THREEQ_KIS_PRODUCT`로 설정하는 기존 방식도 지원합니다. 하나라도 설정되어 있으면 네 값이 모두 필요하며, 이때는 환경 변수가 키체인보다 우선합니다.
 
 브라우저에서 `http://127.0.0.1:8033`을 열면 KIS 실계좌 보유 종목과 QQQ·TQQQ·SQQQ 최근 체결가, 3Q에서 제출한 주문의 접수·체결 상태를 확인할 수 있습니다. Discord 웹훅을 설정한 뒤 `live --discord`로 실행하면 확인된 전량 체결을 통지합니다. 시세는 REST를 순차 조회한 스냅샷이며 거래소 이벤트 시간이 포함된 1초봉은 별도 과제입니다. 실계좌 DB 기본 경로는 `~/Library/Application Support/3Q/live.sqlite3`입니다.
 
