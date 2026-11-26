@@ -70,6 +70,11 @@ th{font-size:12px;color:var(--muted);font-weight:500}tr:last-child td{border:0}
 .mobile-auth p,.mobile-auth details,.mobile-auth button,.mobile-auth input{margin-top:10px}
 .mobile-auth label{display:block;margin-top:10px}
 body[data-mobile]:not(.mobile-authenticated) .shell{display:none}
+body.viewer .metrics,body.viewer .lower,body.viewer #system,body.viewer nav a[href="#trades"],body.viewer nav a[href="#system"]{display:none}
+#admin-pairing{margin-bottom:16px}
+#admin-pairing select{padding:7px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)}
+#mobile-devices{padding:0;list-style:none}
+#mobile-devices li{display:flex;align-items:center;gap:8px;margin-top:6px;overflow-wrap:anywhere}
 .blue{color:var(--blue)}
 @media(max-width:1040px){.shell{grid-template-columns:168px minmax(0,1fr)}main{padding:24px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:740px){.shell{display:block}aside{padding:12px 16px;border-right:0;border-bottom:1px solid var(--border)}.brand{margin:0 0 8px}nav{display:flex;overflow:auto}.machine{display:none}main{padding:18px 15px}.workspace,.lower{grid-template-columns:1fr}.metric strong{font-size:19px}.card{padding:14px}.plot{height:150px}}
@@ -152,6 +157,15 @@ body[data-mobile]:not(.mobile-authenticated) .shell{display:none}
   </div>
   <section class="card settings" id="settings" hidden>
     <h2>내 설정</h2>
+    <form id="personal-preferences" hidden>
+      <fieldset>
+        <legend>내 전략 설정</legend>
+        <p class="caption">VIX 기준값을 개인 설정에 저장합니다. 시세 신호와 주문에는 아직 적용되지 않습니다.</p>
+        <label>VIX 기준값 <input name="vix_threshold" type="number" min="0.01" max="1000" step="0.01" placeholder="예: 25.00"></label>
+        <button type="submit">개인 설정 저장</button>
+        <p id="personal-status" role="status"></p>
+      </fieldset>
+    </form>
     <form id="kis-settings" method="post" action="/api/settings/kis" autocomplete="off">
       <fieldset>
         <legend>한투 실계좌</legend>
@@ -166,9 +180,19 @@ body[data-mobile]:not(.mobile-authenticated) .shell{display:none}
     </form>
     <div id="admin-pairing" hidden>
       <h2>휴대폰 패스키</h2>
+      <label>접근 권한
+        <select id="invite-role">
+          <option value="viewer">지인 · 시세 보기</option>
+          <option value="owner">소유자 · 계좌 조회와 한투 키 설정</option>
+        </select>
+      </label>
+      <label>기기 이름 (선택) <input type="text" id="invite-label" maxlength="48"></label>
       <button type="button" id="issue-pairing">등록 코드 발급</button>
-      <button type="button" id="reset-passkeys">패스키 초기화</button>
       <p id="admin-pairing-status" role="status"></p>
+      <h3>등록된 패스키</h3>
+      <ul id="mobile-devices"></ul>
+      <button type="button" id="refresh-passkeys">목록 새로고침</button>
+      <button type="button" id="reset-passkeys">전체 초기화</button>
     </div>
     <div class="section-top" id="server-release">
       <div><h2>서버 버전</h2><p class="caption" id="release-status" role="status">설치 버전을 확인합니다.</p></div>

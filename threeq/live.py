@@ -160,16 +160,20 @@ def record_account(db, kis):
                (int(time.time()), json.dumps(holdings)))
 
 
-def live_snapshot(db):
-    account = db.execute("SELECT updated, holdings, error FROM live_account").fetchone()
-    if account is None:
-        account = {"updated": None, "holdings": None, "error": None}
+def market_snapshot(db):
     latest = db.execute("SELECT MAX(second) FROM live_quotes").fetchone()[0]
     quotes = dict(db.execute("SELECT symbol, price FROM live_quotes WHERE second=?", (latest,)))
     chart = [dict(row) for row in db.execute(
         "SELECT second,price FROM live_quotes WHERE symbol='TQQQ' ORDER BY second DESC LIMIT 120"
     )]
+    return dict(latest=latest, quotes=quotes, chart=list(reversed(chart)))
+
+
+def live_snapshot(db):
+    account = db.execute("SELECT updated, holdings, error FROM live_account").fetchone()
+    if account is None:
+        account = {"updated": None, "holdings": None, "error": None}
     orders = [dict(row) for row in db.execute("SELECT * FROM live_orders ORDER BY id DESC LIMIT 10")]
     return dict(mode="live", account_updated=account["updated"],
                 holdings=json.loads(account["holdings"] or "[]"), error=account["error"],
-                latest=latest, quotes=quotes, chart=list(reversed(chart)), orders=orders)
+                orders=orders, **market_snapshot(db))

@@ -53,10 +53,47 @@ async function passkey(kind, code) {
 
 function showMobileSession(signedIn) {
   if (!mobilePage) return;
-  document.body.classList.toggle("mobile-authenticated", signedIn);
+  const changed = document.body.classList.toggle("mobile-authenticated", signedIn);
+  const form = document.getElementById("personal-preferences");
+  form.hidden = !signedIn;
+  if (!changed && form.dataset.loaded) {
+    form.reset();
+    delete form.dataset.loaded;
+    document.getElementById("personal-status").textContent = "";
+  }
+  if (signedIn && !form.dataset.loaded) loadPreferences(form);
   authPanel.hidden = signedIn;
   document.getElementById("mobile-logout").hidden = !signedIn;
 }
+
+async function loadPreferences(form) {
+  form.dataset.loaded = "1";
+  const status = document.getElementById("personal-status");
+  try {
+    const response = await fetch("/api/mobile/preferences");
+    if (!response.ok) throw new Error();
+    form.elements.vix_threshold.value = (await response.json()).vix_threshold ?? "";
+  } catch {
+    status.textContent = "개인 설정을 불러오지 못했습니다.";
+  }
+}
+
+document.getElementById("personal-preferences").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const input = form.elements.vix_threshold;
+  const status = document.getElementById("personal-status");
+  const button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    await mobilePost("preferences", {vix_threshold: input.value === "" ? null : input.valueAsNumber});
+    status.textContent = "개인 설정을 저장했습니다.";
+  } catch {
+    status.textContent = "개인 설정을 저장하지 못했습니다.";
+  } finally {
+    button.disabled = false;
+  }
+});
 
 if (mobilePage) {
   showMobileSession(false);
@@ -91,11 +128,55 @@ if (mobilePage) {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js").catch(() => {});
 }
 
+const roleLabels = {owner: "소유자", viewer: "시세 보기"};
+
+async function loadMobileDevices() {
+  const list = document.getElementById("mobile-devices");
+  try {
+    const response = await fetch("/api/mobile/devices");
+    if (!response.ok) throw new Error();
+    const devices = await response.json();
+    list.replaceChildren();
+    if (!devices.length) {
+      const empty = document.createElement("li");
+      empty.textContent = "등록된 패스키가 없습니다.";
+      list.append(empty);
+    }
+    for (const device of devices) {
+      const item = document.createElement("li");
+      const label = document.createElement("span");
+      label.textContent = `${device.label || device.id.slice(0, 8)} · ${roleLabels[device.role]}`;
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.textContent = "접근 해제";
+      revoke.addEventListener("click", async () => {
+        if (!window.confirm(`${label.textContent} 패스키의 접근을 해제할까요?`)) return;
+        try {
+          await mobilePost("revoke", {id: device.id});
+          await loadMobileDevices();
+        } catch (error) {
+          document.getElementById("admin-pairing-status").textContent = error.message;
+        }
+      });
+      item.append(label, revoke);
+      list.append(item);
+    }
+  } catch {
+    const error = document.createElement("li");
+    error.textContent = "패스키 목록을 불러오지 못했습니다.";
+    list.replaceChildren(error);
+  }
+}
+
+document.getElementById("refresh-passkeys").addEventListener("click", loadMobileDevices);
+
 document.getElementById("issue-pairing").addEventListener("click", async () => {
   const status = document.getElementById("admin-pairing-status");
   try {
-    const result = await mobilePost("pair");
-    status.textContent = `${result.origin} · 등록 코드 ${result.code} · 5분 안에 사용하세요.`;
+    const role = document.getElementById("invite-role").value;
+    if (role === "owner" && !window.confirm("이 코드로 연결한 기기에서 계좌 조회와 한투 키 설정을 할 수 있습니다. 소유자 코드를 발급할까요?")) return;
+    const result = await mobilePost("pair", {role, label: document.getElementById("invite-label").value});
+    status.textContent = `${roleLabels[result.role]} · ${result.origin} · 등록 코드 ${result.code} · 5분 안에 사용하세요.`;
   } catch (error) {
     status.textContent = error.message;
   }
@@ -106,6 +187,7 @@ document.getElementById("reset-passkeys").addEventListener("click", async () => 
   const status = document.getElementById("admin-pairing-status");
   try {
     await mobilePost("reset");
+    await loadMobileDevices();
     status.textContent = "등록한 패스키와 로그인 세션을 초기화했습니다.";
   } catch (error) {
     status.textContent = error.message;

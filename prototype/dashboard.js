@@ -60,16 +60,37 @@ function draw(points, contiguous = true) {
   canvas.setAttribute("aria-label", `TQQQ 최근 시세. 최저 ${price(low)}, 최고 ${price(high)}`);
 }
 
+function renderMarket({ latest, quotes, chart }) {
+  document.body.classList.add("viewer");
+  byId("mode").textContent = "시세 보기";
+  byId("settings-link").hidden = false;
+  byId("settings").hidden = false;
+  for (const id of ["kis-settings", "admin-pairing", "server-release", "app-stop"]) byId(id).hidden = true;
+  document.querySelector(".heading .caption").textContent = "QQQ · TQQQ · SQQQ";
+  status.textContent = latest ? `마지막 시세 조회 ${time(latest)} KST` : "시세 조회 대기";
+  document.querySelector(".session").textContent = "한투 최근 체결가";
+  instrument.querySelector("strong").textContent = quotes.TQQQ ? price(quotes.TQQQ) : "—";
+  for (const [index, symbol] of ["TQQQ", "SQQQ", "QQQ"].entries()) {
+    watchValues[index].textContent = quotes[symbol] ? price(quotes[symbol]) : "—";
+  }
+  marketTime.textContent = "조회 시각 기준 · 거래소 체결 시각과 다를 수 있음";
+  draw(chart, false);
+  byId("footer").textContent = "3Q · 시세 보기";
+}
+
 function renderLive(data) {
+  document.body.classList.remove("viewer");
   byId("mode").textContent = "한투 실계좌 · 모니터링";
   byId("settings").hidden = false;
   byId("settings-link").hidden = false;
   byId("kis-settings").hidden = !data.settings_available;
   byId("admin-pairing").hidden = !data.mobile_enabled;
+  if (data.mobile_enabled && !byId("mobile-devices").dataset.loaded) {
+    byId("mobile-devices").dataset.loaded = "1";
+    loadMobileDevices();
+  }
   byId("server-release").hidden = mobilePage;
   byId("app-stop").hidden = mobilePage;
-  if (mobilePage) byId("settings").hidden = !data.settings_available;
-  if (mobilePage) byId("settings-link").hidden = !data.settings_available;
 
   const quoteAge = data.latest == null ? Infinity : Date.now() / 1000 - data.latest;
   status.textContent = data.error || (data.latest
@@ -140,6 +161,10 @@ function renderLive(data) {
 }
 
 function render(data) {
+  if (data.mode === "market") {
+    renderMarket(data);
+    return;
+  }
   if (data.mode === "live") {
     renderLive(data);
     return;

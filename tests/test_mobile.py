@@ -80,24 +80,31 @@ class MobileTest(unittest.TestCase):
                     request(mobile, "/api/mobile/pair", {}, ORIGIN)
                 self.assertEqual(error.exception.code, 404)
 
-                pair, _ = request(admin, "/api/mobile/pair", {}, admin)
-                options, _ = request(mobile, "/api/mobile/register/options", {"code": pair["code"]}, ORIGIN)
-                with self.assertRaises(HTTPError):
-                    request(mobile, "/api/mobile/register/options", {"code": pair["code"]}, ORIGIN)
                 rp_hash = hashlib.sha256(b"neo.example.ts.net").digest()
-                key = ec.generate_private_key(ec.SECP256R1())
-                point = key.public_key().public_numbers()
-                cose = {1: 2, 3: -7, -1: 1, -2: point.x.to_bytes(32), -3: point.y.to_bytes(32)}
-                credential_id = secrets.token_bytes(20)
-                encoded_id = encode(credential_id)
-                auth_data = (rp_hash + b"\x45" + bytes(20) + len(credential_id).to_bytes(2)
-                             + credential_id + cbor2.dumps(cose))
-                response = {"id": encoded_id, "rawId": encoded_id, "type": "public-key", "response": {
-                    "clientDataJSON": encode(client_data("create", options)),
-                    "attestationObject": encode(cbor2.dumps({"fmt": "none", "authData": auth_data, "attStmt": {}})),
-                }}
-                _, cookie = request(mobile, "/api/mobile/register/verify",
-                                    {"request": options["request"], "credential": response}, ORIGIN)
+
+                def register(role):
+                    pair, _ = request(admin, "/api/mobile/pair", {"role": role, "label": role}, admin)
+                    options, _ = request(
+                        mobile, "/api/mobile/register/options", {"code": pair["code"], "role": "owner"}, ORIGIN,
+                    )
+                    with self.assertRaises(HTTPError):
+                        request(mobile, "/api/mobile/register/options", {"code": pair["code"]}, ORIGIN)
+                    key = ec.generate_private_key(ec.SECP256R1())
+                    point = key.public_key().public_numbers()
+                    cose = {1: 2, 3: -7, -1: 1, -2: point.x.to_bytes(32), -3: point.y.to_bytes(32)}
+                    credential_id = secrets.token_bytes(20)
+                    encoded_id = encode(credential_id)
+                    auth_data = (rp_hash + b"\x45" + bytes(20) + len(credential_id).to_bytes(2)
+                                 + credential_id + cbor2.dumps(cose))
+                    response = {"id": encoded_id, "rawId": encoded_id, "type": "public-key", "response": {
+                        "clientDataJSON": encode(client_data("create", options)),
+                        "attestationObject": encode(cbor2.dumps({"fmt": "none", "authData": auth_data, "attStmt": {}})),
+                    }}
+                    _, cookie = request(mobile, "/api/mobile/register/verify",
+                                        {"request": options["request"], "credential": response}, ORIGIN)
+                    return key, response, cookie
+
+                key, response, cookie = register("owner")
                 self.assertIn("Secure; HttpOnly; SameSite=Strict", cookie)
                 cookie = cookie.split(";")[0]
                 state, _ = request(mobile, "/api/state", cookie=cookie)
@@ -109,6 +116,30 @@ class MobileTest(unittest.TestCase):
                 write_keychain.return_value.write.assert_called_once_with(tuple(form.values()))
                 with self.assertRaises(HTTPError):
                     request(mobile, "/api/stop", {}, ORIGIN, cookie)
+                _, _, viewer_cookie = register("viewer")
+                viewer_cookie = viewer_cookie.split(";")[0]
+                viewer, _ = request(mobile, "/api/state", cookie=viewer_cookie)
+                self.assertEqual(set(viewer), {"mode", "latest", "quotes", "chart"})
+                self.assertEqual(viewer["mode"], "market")
+                with self.assertRaises(HTTPError) as error:
+                    request(mobile, "/api/settings/kis", form, ORIGIN, viewer_cookie)
+                self.assertEqual(error.exception.code, 403)
+                with self.assertRaises(HTTPError):
+                    request(mobile, "/api/mobile/devices", cookie=cookie)
+                with self.assertRaises(HTTPError):
+                    request(mobile, "/api/mobile/preferences")
+                request(mobile, "/api/mobile/preferences", {"vix_threshold": 25}, ORIGIN, viewer_cookie)
+                request(mobile, "/api/mobile/preferences", {"vix_threshold": 33}, ORIGIN, cookie)
+                viewer_preferences, _ = request(mobile, "/api/mobile/preferences", cookie=viewer_cookie)
+                owner_preferences, _ = request(mobile, "/api/mobile/preferences", cookie=cookie)
+                self.assertEqual(viewer_preferences["vix_threshold"], 25)
+                self.assertEqual(owner_preferences["vix_threshold"], 33)
+                devices, _ = request(admin, "/api/mobile/devices")
+                viewer_id = next(device["id"] for device in devices if device["role"] == "viewer")
+                request(admin, "/api/mobile/revoke", {"id": viewer_id}, admin)
+                with self.assertRaises(HTTPError):
+                    request(mobile, "/api/state", cookie=viewer_cookie)
+                request(mobile, "/api/state", cookie=cookie)
                 request(mobile, "/api/mobile/logout", {}, ORIGIN, cookie)
 
                 options, _ = request(mobile, "/api/mobile/login/options", {}, ORIGIN)

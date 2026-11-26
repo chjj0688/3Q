@@ -20,7 +20,7 @@ from .engine import STARTING_CASH, apply_sample, connect, demo_sample, replay_cs
 from .keychain import CredentialError, Keychain, VARIABLES, configure
 from .kis import KIS, KISError, NoRedirect
 from .live import SCHEMA as LIVE_SCHEMA
-from .live import bind_account, initialize, live_snapshot, order_limit, reconcile, record_account, record_quotes, submit
+from .live import bind_account, initialize, live_snapshot, market_snapshot, order_limit, reconcile, record_account, record_quotes, submit
 from .releases import release_status
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,7 +117,7 @@ def serve(path, port, webhook, live=False, mobile_origin=None, mobile_port=8034)
             return host == f"127.0.0.1:{port}"
 
         def mobile_session(self):
-            return mobile_auth.authorized(self.headers.get("Cookie", ""))
+            return mobile_auth.session_role(self.headers.get("Cookie", ""))
 
         def json_body(self, maximum=32768):
             if self.headers.get_content_type() != "application/json":
@@ -136,16 +136,24 @@ def serve(path, port, webhook, live=False, mobile_origin=None, mobile_port=8034)
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             if self.path == "/api/state":
-                if self.mobile and not self.mobile_session():
+                role = self.mobile_session() if self.mobile else "admin"
+                if not role:
                     self.send_error(HTTPStatus.UNAUTHORIZED)
                     return
                 with closing(connect(path)) as db:
                     db.execute("BEGIN")
-                    state = live_snapshot(db) if live else snapshot(db)
-                if live:
-                    state["settings_available"] = allow_settings
-                    state["mobile_enabled"] = bool(mobile_auth) and not self.mobile
+                    if role == "viewer":
+                        state = dict(mode="market", **market_snapshot(db))
+                    else:
+                        state = live_snapshot(db) if live else snapshot(db)
+                        if live:
+                            state["settings_available"] = allow_settings
+                            state["mobile_enabled"] = bool(mobile_auth) and not self.mobile
                 self.send_payload(json.dumps(state).encode(), "application/json")
+            elif self.path == "/api/mobile/preferences" and self.mobile:
+                self.mobile_preferences()
+            elif self.path == "/api/mobile/devices" and mobile_auth and not self.mobile:
+                self.send_payload(json.dumps(mobile_auth.devices()).encode(), "application/json")
             elif self.path == "/api/release" and live and not self.mobile:
                 self.send_payload(json.dumps(release_status()).encode(), "application/json")
             elif self.path in ASSETS:
@@ -163,14 +171,29 @@ def serve(path, port, webhook, live=False, mobile_origin=None, mobile_port=8034)
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             if self.mobile:
-                if self.path == "/api/settings/kis" and allow_settings and self.mobile_session():
-                    self.save_kis_settings()
+                if self.path == "/api/mobile/preferences":
+                    self.mobile_preferences(write=True)
+                elif self.path == "/api/settings/kis":
+                    if allow_settings and self.mobile_session() == "owner":
+                        self.save_kis_settings()
+                    else:
+                        self.send_error(HTTPStatus.FORBIDDEN)
                 else:
                     self.handle_mobile_auth()
                 return
-            if mobile_auth and self.path == "/api/mobile/pair":
-                payload = {"code": mobile_auth.issue_pairing(), "origin": mobile_auth.origin}
-                self.send_payload(json.dumps(payload).encode(), "application/json")
+            if mobile_auth and self.path in ("/api/mobile/pair", "/api/mobile/revoke"):
+                try:
+                    form = self.json_body(maximum=4096)
+                    payload = {}
+                    if self.path == "/api/mobile/pair":
+                        role = form.get("role")
+                        code = mobile_auth.issue_pairing(role, form.get("label", ""))
+                        payload = {"code": code, "origin": mobile_auth.origin, "role": role}
+                    else:
+                        mobile_auth.revoke(form.get("id"))
+                    self.send_payload(json.dumps(payload).encode(), "application/json")
+                except (ValueError, OSError):
+                    self.send_error(HTTPStatus.BAD_REQUEST)
                 return
             if mobile_auth and self.path == "/api/mobile/reset":
                 mobile_auth.reset()
@@ -190,6 +213,18 @@ def serve(path, port, webhook, live=False, mobile_origin=None, mobile_port=8034)
             with closing(connect(path)) as db:
                 db.execute("UPDATE account SET paused=? WHERE id=1", (actions[self.path],))
             self.send_payload(b"{}", "application/json")
+
+        def mobile_preferences(self, write=False):
+            try:
+                form = self.json_body(maximum=1024) if write else None
+                preferences = mobile_auth.preferences(self.headers.get("Cookie", ""), form)
+                self.send_payload(json.dumps(preferences).encode(), "application/json")
+            except PermissionError:
+                self.send_error(HTTPStatus.UNAUTHORIZED)
+            except (ValueError, OSError):
+                self.send_error(HTTPStatus.BAD_REQUEST)
+            except sqlite3.Error:
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
 
         def handle_mobile_auth(self):
             if self.path == "/api/mobile/logout":
