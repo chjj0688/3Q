@@ -27,15 +27,22 @@ class AuthError(ValueError):
     pass
 
 
+def mobile_hostname(origin):
+    """Use only the configured canonical HTTPS DNS name as the passkey RP."""
+    host = urlsplit(origin).hostname
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    if (not host or origin != f"https://{host}" or len(host) > 253
+            or not re.fullmatch(rf"(?:{label}\.)+[a-z](?:[a-z0-9-]{{0,61}}[a-z0-9])?", host)
+            or host.endswith((".localhost", ".local", ".internal"))):
+        raise ValueError("Mobile origin must be an HTTPS DNS name without a port or path")
+    return host
+
+
 class MobileAuth:
     def __init__(self, path, origin):
-        url = urlsplit(origin)
-        if (origin != f"https://{url.hostname}" or not url.hostname
-                or not re.fullmatch(r"[a-z0-9][a-z0-9.-]+\.ts\.net", url.hostname)):
-            raise ValueError("Mobile origin must be the HTTPS Tailscale Serve hostname")
         self.path = path
         self.origin = origin
-        self.rp_id = url.hostname
+        self.rp_id = mobile_hostname(origin)
         self.lock = threading.Lock()
         self.pairing = None
         self.challenges = {}

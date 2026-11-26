@@ -378,7 +378,7 @@ def main():
         run.add_argument("--port", type=int, default=8033)
         run.add_argument("--db", type=Path, default=data / default)
         run.add_argument("--discord", action="store_true")
-    run.add_argument("--mobile-origin", help="trusted Tailscale Serve HTTPS origin for phones")
+    run.add_argument("--mobile-origin", help="exact public HTTPS origin for the phone web app")
     run.add_argument("--mobile-port", type=int, default=8034, help="loopback port for the mobile proxy")
     order = commands.add_parser("order")
     order.add_argument("side", choices=("BUY", "SELL"))

@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from threeq.__main__ import serve
 
-ORIGIN = "https://neo.example.ts.net"
+ORIGIN = "https://threeq-example.ngrok-free.app"
 
 
 def encode(value):
@@ -35,6 +35,18 @@ def free_port():
 
 @unittest.skipUnless(importlib.util.find_spec("webauthn"), "mobile dependencies are optional")
 class MobileTest(unittest.TestCase):
+    def test_mobile_origin_accepts_fixed_https_domains_only(self):
+        from threeq.mobile import mobile_hostname
+
+        self.assertEqual(mobile_hostname(ORIGIN), "threeq-example.ngrok-free.app")
+        self.assertEqual(mobile_hostname("https://neo.example.ts.net"), "neo.example.ts.net")
+        for origin in ("http://3q.example.com", "https://3q.example.com/",
+                       "https://3q.example.com:443", "https://127.0.0.1",
+                       "https://3q.local", "https://neo..example.com",
+                       "https://user@3q.example.com"):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                mobile_hostname(origin)
+
     def test_signed_passkey_flow_and_mobile_permissions(self):
         import cbor2
         from cryptography.hazmat.primitives import hashes
@@ -80,7 +92,7 @@ class MobileTest(unittest.TestCase):
                     request(mobile, "/api/mobile/pair", {}, ORIGIN)
                 self.assertEqual(error.exception.code, 404)
 
-                rp_hash = hashlib.sha256(b"neo.example.ts.net").digest()
+                rp_hash = hashlib.sha256(b"threeq-example.ngrok-free.app").digest()
 
                 def register(role):
                     pair, _ = request(admin, "/api/mobile/pair", {"role": role, "label": role}, admin)

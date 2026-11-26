@@ -9,7 +9,7 @@ fi
 
 version="${1:-}"
 if [[ $# -lt 1 || $# -gt 2 || ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  echo "사용법: bash scripts/install-macos.sh vX.Y.Z [https://mac.tailnet.ts.net]" >&2
+  echo "사용법: bash scripts/install-macos.sh vX.Y.Z [https://3q.example.com]" >&2
   exit 2
 fi
 
@@ -20,10 +20,6 @@ agent="$agent_dir/com.threeq.server.plist"
 origin="${2:-}"
 if [[ $# == 1 && -f "$support/mobile-origin" ]]; then
   origin="$(cat "$support/mobile-origin")"
-fi
-if [[ -n "$origin" && ! "$origin" =~ ^https://[a-z0-9][a-z0-9.-]+\.ts\.net$ ]]; then
-  echo "Tailscale Serve의 HTTPS 주소를 입력하세요." >&2
-  exit 2
 fi
 python="$(command -v "${THREEQ_PYTHON:-python3}")"
 "$python" -c 'import sys; sys.exit(sys.version_info < (3, 11))' ||
@@ -55,6 +51,9 @@ if [[ ! -x "$venv/bin/python" ]]; then
 fi
 "$venv/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: -r "$release/requirements-mobile.txt"
 (cd "$release" && "$venv/bin/python" -m unittest discover -s tests)
+if [[ -n "$origin" ]]; then
+  (cd "$release" && "$venv/bin/python" -c 'import sys; from threeq.mobile import mobile_hostname; mobile_hostname(sys.argv[1])' "$origin")
+fi
 
 "$python" - "$support" "$release" "$repo" "$scratch" "$agent" "$origin" <<'PY'
 import os
@@ -102,5 +101,5 @@ fi
 /bin/launchctl bootstrap "$domain" "$agent"
 printf '%s\n' "3Q 서버 $version 설치 완료" "맥 관리자 화면 http://127.0.0.1:8033"
 if [[ -n "$origin" ]]; then
-  printf '%s\n' "휴대폰 $origin · Tailscale Serve 대상 http://127.0.0.1:8034"
+  printf '%s\n' "휴대폰 $origin · HTTPS 터널 대상 http://127.0.0.1:8034"
 fi
